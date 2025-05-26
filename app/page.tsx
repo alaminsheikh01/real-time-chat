@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type Message = {
   user: string;
@@ -122,7 +122,17 @@ export default function Home() {
   const username = useRef('User' + Math.floor(Math.random() * 1000));
   const typingTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  const joinGroup = () => {
+  // Setup and cleanup WebSocket connection
+  // Reconnects when group or joined changes
+  // Cleans up on unmount or group change
+  // Resets messages and typing state on new join
+  // Prevents joining with empty group name
+  useEffect(() => {
+    if (!joined || !group.trim()) return;
+
+    setMessages([]);
+    setTyping(null);
+
     ws.current = new WebSocket('ws://localhost:8000');
 
     ws.current.onopen = () => {
@@ -133,20 +143,50 @@ export default function Home() {
           user: username.current,
         })
       );
+      // Removed local join message for current user
     };
 
     ws.current.onmessage = event => {
       const msg = JSON.parse(event.data);
 
       if (msg.type === 'message') {
-        setMessages(prev => [...prev, { user: msg.user, message: msg.message }]);
+        setMessages(prev => [
+          ...prev,
+          {
+            user: msg.user === username.current ? 'You' : msg.user,
+            message: msg.message
+          }
+        ]);
       } else if (msg.type === 'typing' && msg.user !== username.current) {
         setTyping(`${msg.user} is typing...`);
         if (typingTimeout.current) clearTimeout(typingTimeout.current);
         typingTimeout.current = setTimeout(() => setTyping(null), 2000);
+      } else if (msg.type === 'join' && msg.user !== username.current) {
+        setMessages(prev => [
+          ...prev,
+          { user: 'System', message: `"${msg.user}" joined group "${msg.group}"` }
+        ]);
       }
     };
 
+    ws.current.onclose = () => {
+      ws.current = null;
+    };
+
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+        ws.current = null;
+      }
+      if (typingTimeout.current) {
+        clearTimeout(typingTimeout.current);
+        typingTimeout.current = null;
+      }
+    };
+  }, [joined, group]);
+
+  const joinGroup = () => {
+    if (!group.trim()) return;
     setJoined(true);
   };
 
@@ -158,7 +198,7 @@ export default function Home() {
         message: input,
       };
       ws.current.send(JSON.stringify(message));
-      setMessages(prev => [...prev, { user: 'You', message: input }]);
+      // Remove local "You" message, rely on ws.current.onmessage to update messages
       setInput('');
     }
   };
